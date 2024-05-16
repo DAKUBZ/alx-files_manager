@@ -1,309 +1,150 @@
-"use strict";
+'use strict'
 
-exports.__esModule = true;
-exports.default = void 0;
+exports.byteLength = byteLength
+exports.toByteArray = toByteArray
+exports.fromByteArray = fromByteArray
 
-var _data = _interopRequireDefault(require("../core-js-compat/data.js"));
+var lookup = []
+var revLookup = []
+var Arr = typeof Uint8Array !== 'undefined' ? Uint8Array : Array
 
-var _shippedProposals = _interopRequireDefault(require("./shipped-proposals"));
+var code = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+for (var i = 0, len = code.length; i < len; ++i) {
+  lookup[i] = code[i]
+  revLookup[code.charCodeAt(i)] = i
+}
 
-var _getModulesListForTargetVersion = _interopRequireDefault(require("../core-js-compat/get-modules-list-for-target-version.js"));
+// Support decoding URL-safe base64 strings, as Node.js does.
+// See: https://en.wikipedia.org/wiki/Base64#URL_applications
+revLookup['-'.charCodeAt(0)] = 62
+revLookup['_'.charCodeAt(0)] = 63
 
-var _builtInDefinitions = require("./built-in-definitions");
+function getLens (b64) {
+  var len = b64.length
 
-var _usageFilters = _interopRequireDefault(require("./usage-filters"));
-
-var _babel = _interopRequireWildcard(require("@babel/core"));
-
-var _utils = require("./utils");
-
-var _helperDefinePolyfillProvider = _interopRequireDefault(require("@babel/helper-define-polyfill-provider"));
-
-function _getRequireWildcardCache(nodeInterop) { if (typeof WeakMap !== "function") return null; var cacheBabelInterop = new WeakMap(); var cacheNodeInterop = new WeakMap(); return (_getRequireWildcardCache = function (nodeInterop) { return nodeInterop ? cacheNodeInterop : cacheBabelInterop; })(nodeInterop); }
-
-function _interopRequireWildcard(obj, nodeInterop) { if (!nodeInterop && obj && obj.__esModule) { return obj; } if (obj === null || typeof obj !== "object" && typeof obj !== "function") { return { default: obj }; } var cache = _getRequireWildcardCache(nodeInterop); if (cache && cache.has(obj)) { return cache.get(obj); } var newObj = {}; var hasPropertyDescriptor = Object.defineProperty && Object.getOwnPropertyDescriptor; for (var key in obj) { if (key !== "default" && Object.prototype.hasOwnProperty.call(obj, key)) { var desc = hasPropertyDescriptor ? Object.getOwnPropertyDescriptor(obj, key) : null; if (desc && (desc.get || desc.set)) { Object.defineProperty(newObj, key, desc); } else { newObj[key] = obj[key]; } } } newObj.default = obj; if (cache) { cache.set(obj, newObj); } return newObj; }
-
-function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
-
-function _extends() { _extends = Object.assign ? Object.assign.bind() : function (target) { for (var i = 1; i < arguments.length; i++) { var source = arguments[i]; for (var key in source) { if (Object.prototype.hasOwnProperty.call(source, key)) { target[key] = source[key]; } } } return target; }; return _extends.apply(this, arguments); }
-
-const {
-  types: t
-} = _babel.default || _babel;
-const runtimeCompat = "#__secret_key__@babel/runtime__compatibility";
-
-const esnextFallback = (name, cb) => {
-  if (cb(name)) return true;
-  if (!name.startsWith("es.")) return false;
-  const fallback = `esnext.${name.slice(3)}`;
-  if (!_data.default[fallback]) return false;
-  return cb(fallback);
-};
-
-var _default = (0, _helperDefinePolyfillProvider.default)(function ({
-  getUtils,
-  method,
-  shouldInjectPolyfill,
-  createMetaResolver,
-  debug,
-  babel
-}, {
-  version = 3,
-  proposals,
-  shippedProposals,
-  [runtimeCompat]: {
-    useBabelRuntime,
-    ext = ".js"
-  } = {
-    useBabelRuntime: ""
-  }
-}) {
-  const isWebpack = babel.caller(caller => (caller == null ? void 0 : caller.name) === "babel-loader");
-  const resolve = createMetaResolver({
-    global: _builtInDefinitions.BuiltIns,
-    static: _builtInDefinitions.StaticProperties,
-    instance: _builtInDefinitions.InstanceProperties
-  });
-  const available = new Set((0, _getModulesListForTargetVersion.default)(version));
-
-  function getCoreJSPureBase(useProposalBase) {
-    return useBabelRuntime ? useProposalBase ? `${useBabelRuntime}/core-js` : `${useBabelRuntime}/core-js-stable` : useProposalBase ? "core-js-pure/features" : "core-js-pure/stable";
+  if (len % 4 > 0) {
+    throw new Error('Invalid string. Length must be a multiple of 4')
   }
 
-  function maybeInjectGlobalImpl(name, utils) {
-    if (shouldInjectPolyfill(name)) {
-      debug(name);
-      utils.injectGlobalImport((0, _utils.coreJSModule)(name));
-      return true;
-    }
+  // Trim off extra bytes after placeholder bytes are found
+  // See: https://github.com/beatgammit/base64-js/issues/42
+  var validLen = b64.indexOf('=')
+  if (validLen === -1) validLen = len
 
-    return false;
+  var placeHoldersLen = validLen === len
+    ? 0
+    : 4 - (validLen % 4)
+
+  return [validLen, placeHoldersLen]
+}
+
+// base64 is 4/3 + up to two characters of the original data
+function byteLength (b64) {
+  var lens = getLens(b64)
+  var validLen = lens[0]
+  var placeHoldersLen = lens[1]
+  return ((validLen + placeHoldersLen) * 3 / 4) - placeHoldersLen
+}
+
+function _byteLength (b64, validLen, placeHoldersLen) {
+  return ((validLen + placeHoldersLen) * 3 / 4) - placeHoldersLen
+}
+
+function toByteArray (b64) {
+  var tmp
+  var lens = getLens(b64)
+  var validLen = lens[0]
+  var placeHoldersLen = lens[1]
+
+  var arr = new Arr(_byteLength(b64, validLen, placeHoldersLen))
+
+  var curByte = 0
+
+  // if there are placeholders, only get up to the last complete 4 chars
+  var len = placeHoldersLen > 0
+    ? validLen - 4
+    : validLen
+
+  var i
+  for (i = 0; i < len; i += 4) {
+    tmp =
+      (revLookup[b64.charCodeAt(i)] << 18) |
+      (revLookup[b64.charCodeAt(i + 1)] << 12) |
+      (revLookup[b64.charCodeAt(i + 2)] << 6) |
+      revLookup[b64.charCodeAt(i + 3)]
+    arr[curByte++] = (tmp >> 16) & 0xFF
+    arr[curByte++] = (tmp >> 8) & 0xFF
+    arr[curByte++] = tmp & 0xFF
   }
 
-  function maybeInjectGlobal(names, utils, fallback = true) {
-    for (const name of names) {
-      if (fallback) {
-        esnextFallback(name, name => maybeInjectGlobalImpl(name, utils));
-      } else {
-        maybeInjectGlobalImpl(name, utils);
-      }
-    }
+  if (placeHoldersLen === 2) {
+    tmp =
+      (revLookup[b64.charCodeAt(i)] << 2) |
+      (revLookup[b64.charCodeAt(i + 1)] >> 4)
+    arr[curByte++] = tmp & 0xFF
   }
 
-  function maybeInjectPure(desc, hint, utils, object) {
-    if (desc.pure && !(object && desc.exclude && desc.exclude.includes(object)) && esnextFallback(desc.name, shouldInjectPolyfill)) {
-      const {
-        name
-      } = desc;
-      let useProposalBase = false;
-
-      if (proposals || shippedProposals && name.startsWith("esnext.")) {
-        useProposalBase = true;
-      } else if (name.startsWith("es.") && !available.has(name)) {
-        useProposalBase = true;
-      }
-
-      const coreJSPureBase = getCoreJSPureBase(useProposalBase);
-      return utils.injectDefaultImport(`${coreJSPureBase}/${desc.pure}${ext}`, hint);
-    }
+  if (placeHoldersLen === 1) {
+    tmp =
+      (revLookup[b64.charCodeAt(i)] << 10) |
+      (revLookup[b64.charCodeAt(i + 1)] << 4) |
+      (revLookup[b64.charCodeAt(i + 2)] >> 2)
+    arr[curByte++] = (tmp >> 8) & 0xFF
+    arr[curByte++] = tmp & 0xFF
   }
 
-  function isFeatureStable(name) {
-    if (name.startsWith("esnext.")) {
-      const esName = `es.${name.slice(7)}`; // If its imaginative esName is not in latest compat data, it means
-      // the proposal is not stage 4
+  return arr
+}
 
-      return esName in _data.default;
-    }
+function tripletToBase64 (num) {
+  return lookup[num >> 18 & 0x3F] +
+    lookup[num >> 12 & 0x3F] +
+    lookup[num >> 6 & 0x3F] +
+    lookup[num & 0x3F]
+}
 
-    return true;
+function encodeChunk (uint8, start, end) {
+  var tmp
+  var output = []
+  for (var i = start; i < end; i += 3) {
+    tmp =
+      ((uint8[i] << 16) & 0xFF0000) +
+      ((uint8[i + 1] << 8) & 0xFF00) +
+      (uint8[i + 2] & 0xFF)
+    output.push(tripletToBase64(tmp))
+  }
+  return output.join('')
+}
+
+function fromByteArray (uint8) {
+  var tmp
+  var len = uint8.length
+  var extraBytes = len % 3 // if we have 1 byte left, pad 2 bytes
+  var parts = []
+  var maxChunkLength = 16383 // must be multiple of 3
+
+  // go through the array every three bytes, we'll deal with trailing stuff later
+  for (var i = 0, len2 = len - extraBytes; i < len2; i += maxChunkLength) {
+    parts.push(encodeChunk(uint8, i, (i + maxChunkLength) > len2 ? len2 : (i + maxChunkLength)))
   }
 
-  return {
-    name: "corejs3",
-    polyfills: _data.default,
+  // pad the end with zeros, but make sure to not forget the extra bytes
+  if (extraBytes === 1) {
+    tmp = uint8[len - 1]
+    parts.push(
+      lookup[tmp >> 2] +
+      lookup[(tmp << 4) & 0x3F] +
+      '=='
+    )
+  } else if (extraBytes === 2) {
+    tmp = (uint8[len - 2] << 8) + uint8[len - 1]
+    parts.push(
+      lookup[tmp >> 10] +
+      lookup[(tmp >> 4) & 0x3F] +
+      lookup[(tmp << 2) & 0x3F] +
+      '='
+    )
+  }
 
-    filterPolyfills(name) {
-      if (!available.has(name)) return false;
-      if (proposals || method === "entry-global") return true;
-
-      if (shippedProposals && _shippedProposals.default.has(name)) {
-        return true;
-      }
-
-      return isFeatureStable(name);
-    },
-
-    entryGlobal(meta, utils, path) {
-      if (meta.kind !== "import") return;
-      const modules = (0, _utils.isCoreJSSource)(meta.source);
-      if (!modules) return;
-
-      if (modules.length === 1 && meta.source === (0, _utils.coreJSModule)(modules[0]) && shouldInjectPolyfill(modules[0])) {
-        // Avoid infinite loop: do not replace imports with a new copy of
-        // themselves.
-        debug(null);
-        return;
-      }
-
-      const modulesSet = new Set(modules);
-      const filteredModules = modules.filter(module => {
-        if (!module.startsWith("esnext.")) return true;
-        const stable = module.replace("esnext.", "es.");
-
-        if (modulesSet.has(stable) && shouldInjectPolyfill(stable)) {
-          return false;
-        }
-
-        return true;
-      });
-      maybeInjectGlobal(filteredModules, utils, false);
-      path.remove();
-    },
-
-    usageGlobal(meta, utils, path) {
-      const resolved = resolve(meta);
-      if (!resolved) return;
-      if ((0, _usageFilters.default)(resolved.desc, path)) return;
-      let deps = resolved.desc.global;
-
-      if (resolved.kind !== "global" && "object" in meta && meta.object && meta.placement === "prototype") {
-        const low = meta.object.toLowerCase();
-        deps = deps.filter(m => m.includes(low) || _builtInDefinitions.CommonInstanceDependencies.has(m));
-      }
-
-      maybeInjectGlobal(deps, utils);
-    },
-
-    usagePure(meta, utils, path) {
-      if (meta.kind === "in") {
-        if (meta.key === "Symbol.iterator") {
-          path.replaceWith(t.callExpression(utils.injectDefaultImport((0, _utils.coreJSPureHelper)("is-iterable", useBabelRuntime, ext), "isIterable"), [path.node.right] // meta.kind === "in" narrows this
-          ));
-        }
-
-        return;
-      }
-
-      if (path.parentPath.isUnaryExpression({
-        operator: "delete"
-      })) return;
-
-      if (meta.kind === "property") {
-        // We can't compile destructuring and updateExpression.
-        if (!path.isMemberExpression()) return;
-        if (!path.isReferenced()) return;
-        if (path.parentPath.isUpdateExpression()) return;
-
-        if (t.isSuper(path.node.object)) {
-          return;
-        }
-
-        if (meta.key === "Symbol.iterator") {
-          if (!shouldInjectPolyfill("es.symbol.iterator")) return;
-          const {
-            parent,
-            node
-          } = path;
-
-          if (t.isCallExpression(parent, {
-            callee: node
-          })) {
-            if (parent.arguments.length === 0) {
-              path.parentPath.replaceWith(t.callExpression(utils.injectDefaultImport((0, _utils.coreJSPureHelper)("get-iterator", useBabelRuntime, ext), "getIterator"), [node.object]));
-              path.skip();
-            } else {
-              (0, _utils.callMethod)(path, utils.injectDefaultImport((0, _utils.coreJSPureHelper)("get-iterator-method", useBabelRuntime, ext), "getIteratorMethod"));
-            }
-          } else {
-            path.replaceWith(t.callExpression(utils.injectDefaultImport((0, _utils.coreJSPureHelper)("get-iterator-method", useBabelRuntime, ext), "getIteratorMethod"), [path.node.object]));
-          }
-
-          return;
-        }
-      }
-
-      let resolved = resolve(meta);
-      if (!resolved) return;
-      if ((0, _usageFilters.default)(resolved.desc, path)) return;
-
-      if (useBabelRuntime && resolved.desc.pure && resolved.desc.pure.slice(-6) === "/index") {
-        // Remove /index, since it doesn't exist in @babel/runtime-corejs3s
-        resolved = _extends({}, resolved, {
-          desc: _extends({}, resolved.desc, {
-            pure: resolved.desc.pure.slice(0, -6)
-          })
-        });
-      }
-
-      if (resolved.kind === "global") {
-        const id = maybeInjectPure(resolved.desc, resolved.name, utils);
-        if (id) path.replaceWith(id);
-      } else if (resolved.kind === "static") {
-        const id = maybeInjectPure(resolved.desc, resolved.name, utils, // @ts-expect-error
-        meta.object);
-        if (id) path.replaceWith(id);
-      } else if (resolved.kind === "instance") {
-        const id = maybeInjectPure(resolved.desc, `${resolved.name}InstanceProperty`, utils, // @ts-expect-error
-        meta.object);
-        if (!id) return;
-        const {
-          node
-        } = path;
-
-        if (t.isCallExpression(path.parent, {
-          callee: node
-        })) {
-          (0, _utils.callMethod)(path, id);
-        } else {
-          path.replaceWith(t.callExpression(id, [node.object]));
-        }
-      }
-    },
-
-    visitor: method === "usage-global" && {
-      // import("foo")
-      CallExpression(path) {
-        if (path.get("callee").isImport()) {
-          const utils = getUtils(path);
-
-          if (isWebpack) {
-            // Webpack uses Promise.all to handle dynamic import.
-            maybeInjectGlobal(_builtInDefinitions.PromiseDependenciesWithIterators, utils);
-          } else {
-            maybeInjectGlobal(_builtInDefinitions.PromiseDependencies, utils);
-          }
-        }
-      },
-
-      // (async function () { }).finally(...)
-      Function(path) {
-        if (path.node.async) {
-          maybeInjectGlobal(_builtInDefinitions.PromiseDependencies, getUtils(path));
-        }
-      },
-
-      // for-of, [a, b] = c
-      "ForOfStatement|ArrayPattern"(path) {
-        maybeInjectGlobal(_builtInDefinitions.CommonIterators, getUtils(path));
-      },
-
-      // [...spread]
-      SpreadElement(path) {
-        if (!path.parentPath.isObjectExpression()) {
-          maybeInjectGlobal(_builtInDefinitions.CommonIterators, getUtils(path));
-        }
-      },
-
-      // yield*
-      YieldExpression(path) {
-        if (path.node.delegate) {
-          maybeInjectGlobal(_builtInDefinitions.CommonIterators, getUtils(path));
-        }
-      }
-
-    }
-  };
-});
-
-exports.default = _default;
+  return parts.join('')
+}
